@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sanjeevani – Care Circle for Elders</title>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f3f6f3;--card:#fff;--ink:#17302b;--mute:#5b6f6a;--g:#1f6f5c;--gl:#dcefe8;--y:#e8a317;--yl:#fdf1d6;--r:#b3362f;--rl:#f9dedb;--line:#d5e0db}
+@media(prefers-color-scheme:dark){:root{--bg:#10201c;--card:#18302a;--ink:#eaf3ef;--mute:#9fb5ae;--g:#5fc2a5;--gl:#1d4a3e;--y:#f0b94a;--yl:#4a3b14;--r:#f08a82;--rl:#4a1f1c;--line:#2b4a42}}
+*{box-sizing:border-box}body{margin:0;font:17px/1.5 'Atkinson Hyperlegible',system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+body.big{font-size:22px}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:1.5em;margin:.2em 0}h2{font-size:1.2em;margin:1em 0 .4em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:10px 0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.sp{flex:1}
+.dose{border-left:8px solid var(--line)}.dose.taken{border-color:var(--g)}.dose.missed{border-color:var(--r)}.dose.due{border-color:var(--y)}
+.chip{padding:2px 10px;border-radius:99px;font-size:.8em;font-weight:700;background:var(--gl);color:var(--g)}
+.chip.missed{background:var(--rl);color:var(--r)}.chip.due,.chip.pending{background:var(--yl);color:var(--y)}
+button{font:inherit;font-weight:700;border:2px solid var(--g);background:var(--g);color:#fff;border-radius:10px;padding:8px 16px;cursor:pointer;min-height:44px}
+button.alt{background:transparent;color:var(--g)}button.bad{border-color:var(--r);background:transparent;color:var(--r)}
+body.big button{min-height:56px}
+input,select,textarea{font:inherit;width:100%;padding:10px;border:2px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+label{display:block;margin:8px 0 2px;font-weight:700;font-size:.9em}
+:focus-visible{outline:3px solid var(--y);outline-offset:2px}
+nav{display:flex;gap:6px;overflow-x:auto;padding:6px 0;position:sticky;top:0;background:var(--bg);z-index:2}
+nav button{background:transparent;color:var(--ink);border-color:var(--line);white-space:nowrap}nav button.on{background:var(--g);color:#fff;border-color:var(--g)}
+.bar{height:14px;border-radius:7px;background:var(--line);overflow:hidden;flex:1}.bar i{display:block;height:100%;background:var(--g)}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;display:none;max-width:90%}
+.mute{color:var(--mute)}.ai{white-space:pre-wrap;background:var(--gl);border-radius:10px;padding:12px;margin-top:8px}
+</style></head><body><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script type="module">import*as Core from "./core.mjs";window.Core=Core</script><script src="config.js"></script><main id="app"></main><div id="toast" role="status" aria-live="polite"></div>
+<script>
+const sb=supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_ANON_KEY),$=s=>document.querySelector(s);
+let C=null,ME=null,SES=null,D={meds:[],appts:[],logs:[],reqs:[],mem:[]},TD=[],tab='today',editId=null,ai={},signup=false;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const mins=t=>{const[h,m]=t.split(':').map(Number);return h*60+m},okTime=t=>/^([01]\d|2[0-3]):[0-5]\d$/.test(t),okMail=e=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.display='none',4000)}
+async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+SES.access_token},body:JSON.stringify(body)});let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||'Something went wrong');return j}
+const now=()=>{const n=new Date(),o={timeZone:C.tz,hourCycle:'h23'};return{d:n.toLocaleDateString('en-CA',o),t:n.toLocaleTimeString('en-GB',{...o,hour:'2-digit',minute:'2-digit'})}};
+const can=()=>ME.role!=='family';
+
+/* auth + boot */
+addEventListener('DOMContentLoaded',()=>sb.auth.onAuthStateChange((e,s)=>{const nu=!!s&&(!SES||SES.user.id!==s.user.id);SES=s;if(!s){C=null;ME=null;render()}else if(nu){C=null;ME=null;tab='today';ai={};setTimeout(boot,0)}}));
+async function boot(){sb.removeAllChannels();await sb.rpc('claim_membership');const{data}=await sb.from('circle_members').select('*,circles(*)').eq('user_id',SES.user.id).limit(1);
+ if(data&&data[0]){ME=data[0];C=data[0].circles;await load();let h;sb.channel('live').on('postgres_changes',{event:'*',schema:'public'},()=>{clearTimeout(h);h=setTimeout(()=>{if(!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))load()},400)}).subscribe()}else render()}
+async function load(){const f=new Date(Date.now()-9*864e5).toISOString().slice(0,10),q=t=>sb.from(t).select('*').eq('circle_id',C.id);
+ const[a,b,c,d,e,k]=await Promise.all([q('meds'),q('appts').order('appt_date'),q('dose_logs').gte('dose_date',f),q('requests').order('created_at'),q('circle_members'),q('checkins').gte('day',f)]);
+ D={meds:a.data||[],appts:b.data||[],logs:c.data||[],reqs:d.data||[],mem:e.data||[],chk:k.data||[]};render()}
+async function auth(e){e.preventDefault();const f=e.target,em=f.email.value.trim().toLowerCase(),pw=f.pw.value;if(!okMail(em)||pw.length<8)return toast('Enter a valid email and a password of 8+ characters');
+ if(signup){const{data,error}=await sb.auth.signUp({email:em,password:pw});if(error)return toast(error.message);if(!data.session)toast('Check your email to confirm, then sign in');}
+ else{const{error}=await sb.auth.signInWithPassword({email:em,password:pw});if(error)return toast('Wrong email or password')}}
+async function mkCircle(e){e.preventDefault();const f=e.target,{error}=await sb.rpc('create_circle',{p_name:f.cn.value,p_elder:f.en.value});if(error)return toast(error.message);boot()}
+
+/* doses: logic lives in core.mjs (unit-tested) */
+const dosesFor=d=>Core.dosesFor(D.meds,d),logOf=(d,m,t)=>Core.logStatus(D.logs,d,m,t);
+const status=(x,T)=>Core.doseStatus(logOf(x.date,x.m.id,x.t),T.t,x.t);
+const adherence=()=>{const T=now();return Core.adherence(D.meds,D.logs,T.d,T.t)};
+
+/* actions */
+async function mark(i,s){const x=TD[i],{error}=await sb.rpc('log_dose',{p_circle:C.id,p_med:x.m.id,p_date:x.date,p_time:x.t,p_status:s});if(error)toast(error.message);else load()}
+async function change(kind,p,label){const{data,error}=await sb.rpc('submit_change',{p_circle:C.id,p_kind:kind,p_payload:p,p_label:label});if(error)return toast(error.message);
+ if(data==='pending'){toast('Sent to '+C.elder_name+' for approval');api('/api/notify',{circle_id:C.id,kind:'request',label}).catch(()=>{})}else toast('Saved');load()}
+async function decide(id,ok){const{error}=await sb.rpc('decide_request',{p_id:id,p_ok:ok});if(error)toast(error.message);else load()}
+function medSubmit(e){e.preventDefault();const f=e.target,times=[...new Set(f.times.value.split(',').map(s=>s.trim()).filter(Boolean))];
+ if(!f.name.value.trim()||!times.length||times.length>8||!times.every(okTime))return toast('Enter a name and times like 08:00, 20:00');
+ const p={name:f.name.value.trim(),dose:f.dose.value.trim(),times,notes:f.notes.value.trim()};
+ if(editId){change('edit_med',{...p,id:editId},`Change ${p.name} to ${times.join(', ')}`);editId=null}else change('add_med',p,`Add ${p.name} ${p.dose} at ${times.join(', ')}`)}
+function apptSubmit(e){e.preventDefault();const f=e.target;if(!f.title.value.trim()||!f.date.value||!okTime(f.time.value))return toast('Add a title, date and time');
+ change('add_appt',{title:f.title.value.trim(),doctor:f.doctor.value.trim(),date:f.date.value,time:f.time.value},`Appointment: ${f.title.value} on ${f.date.value} ${f.time.value}`)}
+async function addMember(e){e.preventDefault();const f=e.target,em=f.email.value.trim().toLowerCase();if(!okMail(em)||!f.name.value.trim())return toast('Enter a name and valid email');
+ const{error}=await sb.from('circle_members').insert({circle_id:C.id,email:em,name:f.name.value.trim(),role:f.role.value});if(error)return toast(error.message.includes('duplicate')?'Already in the circle':error.message);load()}
+async function ask(key,body){ai[key]='Asking Gemini…';render();try{ai[key]=(await api('/api/ai',body)).text}catch(e){ai[key]=e.message}render()}
+async function sample(){const T=[['add_med',{name:'Metformin',dose:'500 mg',times:['08:00','20:00'],notes:'After food'},'Add Metformin'],['add_med',{name:'Amlodipine',dose:'5 mg',times:['09:00'],notes:'Blood pressure'},'Add Amlodipine'],['add_med',{name:'Vitamin D3',dose:'1 capsule',times:['13:00'],notes:'With lunch'},'Add Vitamin D3']];
+ for(const[k,p,l]of T)await sb.rpc('submit_change',{p_circle:C.id,p_kind:k,p_payload:p,p_label:l});load()}
+
+/* safety + demo */
+async function checkIn(){const{error}=await sb.rpc('check_in',{p_circle:C.id});if(error)toast(error.message);else{toast('Your family knows you are well');load()}}
+async function sos(){if(!confirm('Send an emergency alert to your family now?'))return;
+ const pos=await new Promise(r=>navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>r({lat:p.coords.latitude,lng:p.coords.longitude}),()=>r({}),{timeout:4000}):r({}));
+ try{const j=await api('/api/sos',{circle_id:C.id,...pos});alert(j.demo?'Demo: in a real circle your family would be emailed now.':j.notified?'Your family has been alerted. If this is an emergency, also call 112.':'We could not email your family. Please call 112 or your family now.')}catch(e){alert(e.message+'\nIf this is an emergency, call 112 now.')}}
+async function demoLogin(role,reset){try{const r=await fetch('/api/demo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,reset:!!reset})});const j=await r.json();if(!r.ok)throw Error(j.error||'The demo is unavailable');const{error}=await sb.auth.setSession({access_token:j.access_token,refresh_token:j.refresh_token});if(error)throw error;if(reset)setTimeout(()=>{load();toast('Demo reset')},600)}catch(e){toast(e.message)}}
+const demoBar=()=>C&&C.demo?`<div class="card row" style="border-color:var(--y)"><b>Demo circle</b><span class="sp mute">Switch role to see each view</span>${['elder','caregiver','family'].filter(r=>r!==ME.role).map(r=>`<button class="alt" onclick="demoLogin('${r}')">${r}</button>`).join('')}<button class="alt" onclick="demoLogin('${ME.role}',true)">Reset</button></div>`:'';
+
+/* views */
+const AI_NOTE='<p class="mute">AI explanations are general information, not a doctor\'s advice.</p>';
+function medCard(m){return `<div class="card"><div class="row"><div class="sp"><b>${esc(m.name)}</b> ${esc(m.dose)}<div class="mute">${m.times.join(', ')}${m.notes?' · '+esc(m.notes):''}</div></div>${can()?`<button class="alt" onclick="editId='${m.id}';render()">Edit</button><button class="bad" onclick="delMed('${m.id}')">Stop</button>`:''}<button class="alt" onclick="ask('${m.id}',{kind:'explain',name:D.meds.find(x=>x.id=='${m.id}').name})">Explain simply</button></div>${ai[m.id]?`<div class="ai">${esc(ai[m.id])}</div>`:''}</div>`}
+function delMed(id){const m=D.meds.find(x=>x.id===id);if(confirm('Stop '+m.name+'? Past records are kept.'))change('del_med',{id},'Stop '+m.name)}
+function delAppt(id){const a=D.appts.find(x=>x.id===id);change('del_appt',{id},'Cancel '+a.title)}
+function view(){const T=now();
+ if(tab==='today'){TD=dosesFor(T.d);const nx=[...D.appts].sort((a,b)=>(a.appt_date+a.appt_time).localeCompare(b.appt_date+b.appt_time)).find(a=>a.appt_date+a.appt_time>=T.d+T.t),chk=D.chk.some(x=>x.day===T.d),
+  cc=ME.role==='elder'?`<div class="card row"><div class="sp"><b>Daily check-in</b><div class="mute">${chk?'Your family knows you are well today.':'Tap once so your family knows you are well.'}</div></div>${chk?'<span class="chip">Done</span>':'<button onclick="checkIn()">I am OK</button>'}</div>`:`<div class="card row"><b class="sp">Daily check-in</b><span class="chip ${chk?'':'pending'}">${chk?esc(C.elder_name)+' is OK today':'Not yet today'}</span></div>`;
+  return `${ME.role==='elder'&&D.reqs.length?`<div class="card" style="border-color:var(--y)"><b>${D.reqs.length} change${D.reqs.length>1?'s':''} waiting for your approval</b> <button onclick="tab='circle';render()">Review</button></div>`:''}
+  ${cc}<h2>Today's medicines</h2>${TD.map((x,i)=>{const s=status(x,T);return `<div class="card dose ${s}"><div class="row"><div class="sp"><b>${x.t}</b> · ${esc(x.m.name)} ${esc(x.m.dose)}${x.m.notes?`<div class="mute">${esc(x.m.notes)}</div>`:''}</div><span class="chip ${s}">${{taken:'Taken',skipped:'Skipped',missed:'Missed',due:'Due now',later:'Later'}[s]}</span>${can()&&s!=='taken'?`<button onclick="mark(${i},'taken')">Taken</button><button class="alt" onclick="mark(${i},'skipped')">Skip</button>`:''}</div></div>`}).join('')||'<p class="mute">No doses scheduled today.</p>'}
+  ${ME.role==='elder'&&!D.meds.length?'<button onclick="sample()">Add sample medicines</button>':''}
+  <h2>Next appointment</h2>${nx?`<div class="card"><b>${esc(nx.title)}</b> ${esc(nx.doctor)}<div class="mute">${nx.appt_date} at ${nx.appt_time}</div></div>`:'<p class="mute">Nothing booked.</p>'}${ME.role==='elder'?'<h2>Emergency</h2><button class="bad" onclick="sos()">Alert my family now</button>':''}`}
+ if(tab==='meds'){const active=D.meds.filter(m=>!m.end_date),m=D.meds.find(x=>x.id===editId)||{name:'',dose:'',times:[],notes:''};
+  return `<h2>Medicines</h2>${active.map(medCard).join('')||'<p class="mute">No medicines yet.</p>'}${AI_NOTE}
+  ${can()?`<h2>${editId?'Edit medicine':'Add medicine'}</h2><form class="card" onsubmit="medSubmit(event)"><label>Name</label><input name="name" maxlength="80" value="${esc(m.name)}" required><label>Dose</label><input name="dose" maxlength="60" value="${esc(m.dose)}" placeholder="500 mg"><label>Times (24h, comma separated)</label><input name="times" value="${m.times.join(', ')}" placeholder="08:00, 20:00"><label>Notes</label><input name="notes" maxlength="120" value="${esc(m.notes)}"><div class="row" style="margin-top:12px"><button>${editId?'Save changes':'Add medicine'}</button>${editId?'<button type="button" class="alt" onclick="editId=null;render()">Cancel</button>':''}</div>${ME.role==='caregiver'?`<p class="mute">Your changes go to ${esc(C.elder_name)} for approval.</p>`:''}</form>`:'<p class="mute">Family members have view-only access.</p>'}`}
+ if(tab==='appts')return `<h2>Appointments</h2>${D.appts.map(a=>`<div class="card row"><div class="sp"><b>${esc(a.title)}</b> ${esc(a.doctor)}<div class="mute">${a.appt_date} at ${a.appt_time}</div></div>${can()?`<button class="bad" onclick="delAppt('${a.id}')">Remove</button>`:''}</div>`).join('')||'<p class="mute">No appointments.</p>'}
+  ${can()?`<form class="card" onsubmit="apptSubmit(event)"><label>Title</label><input name="title" maxlength="80" required><label>Doctor</label><input name="doctor" maxlength="60"><div class="row"><div class="sp"><label>Date</label><input type="date" name="date" required></div><div class="sp"><label>Time</label><input type="time" name="time" required></div></div><div style="margin-top:12px"><button>Add appointment</button></div></form>`:''}`;
+ if(tab==='circle')return `<h2>Care circle</h2>${D.mem.map(m=>`<div class="card"><b>${esc(m.name)}</b> <span class="chip">${m.role}</span> <span class="chip ${m.user_id?'':'pending'}">${m.user_id?'Joined':'Invited'}</span><div class="mute">${esc(m.email)}</div></div>`).join('')}
+  ${ME.role==='elder'?`<form class="card" onsubmit="addMember(event)"><b>Invite someone</b><label>Name</label><input name="name" required><label>Email (they sign up with this)</label><input name="email" type="email" required><label>Role</label><select name="role"><option value="caregiver">Caregiver (can suggest changes)</option><option value="family">Family (view only)</option></select><div style="margin-top:12px"><button>Invite</button></div></form>`:''}
+  <h2>Waiting for approval</h2>${D.reqs.map(r=>`<div class="card row"><div class="sp">${esc(r.label)}<div class="mute">suggested by ${esc(r.by_name)}</div></div>${ME.role==='elder'?`<button onclick="decide('${r.id}',true)">Approve</button><button class="bad" onclick="decide('${r.id}',false)">Decline</button>`:'<span class="chip pending">Pending</span>'}</div>`).join('')||'<p class="mute">Nothing waiting.</p>'}
+  ${ME.role==='family'?`<button onclick="api('/api/notify',{circle_id:C.id,kind:'encourage'}).then(()=>toast('Message sent')).catch(e=>toast(e.message))">Send encouragement</button>`:''}`;
+ if(tab==='insights'){const a=adherence(),tt=a.reduce((x,d)=>x+d.total,0),tk=a.reduce((x,d)=>x+d.taken,0),pct=tt?Math.round(tk/tt*100):0;
+  return `<h2>Last 7 days</h2><div class="card"><b style="font-size:2em">${pct}%</b> of doses taken<div style="margin-top:8px">${a.map(d=>`<div class="row"><span class="mute" style="width:84px">${d.ds.slice(5)}</span><div class="bar"><i style="width:${d.total?d.taken/d.total*100:0}%"></i></div><span>${d.taken}/${d.total}</span></div>`).join('')}</div></div>
+  <button onclick="ask('wk',{kind:'summary',pct:${pct},taken:${tk},total:${tt}})">Write weekly summary with Gemini</button>${ai.wk?`<div class="ai">${esc(ai.wk)}</div>`:''}${AI_NOTE}`}}
+function render(){const A=$('#app');document.body.classList.toggle('big',!!ME&&ME.role==='elder');
+ if(!SES){A.innerHTML=`<h1>Sanjeevani</h1><p class="mute">A care circle that keeps the elder in charge.</p><form class="card" onsubmit="auth(event)"><label>Email</label><input name="email" type="email" autocomplete="email" required><label>Password</label><input name="pw" type="password" autocomplete="${signup?'new':'current'}-password" required><div class="row" style="margin-top:12px"><button>${signup?'Create account':'Sign in'}</button><button type="button" class="alt" onclick="signup=!signup;render()">${signup?'I have an account':'New here? Create account'}</button></div></form><div class="card"><b>Just looking?</b><p class="mute">Try a ready-made family circle. No sign-up needed.</p><div class="row"><button onclick="demoLogin('elder')">Enter as Elder</button><button class="alt" onclick="demoLogin('caregiver')">As Caregiver</button><button class="alt" onclick="demoLogin('family')">As Family</button></div></div>`;return}
+ if(!C){A.innerHTML=`<h1>Start a care circle</h1><p class="mute">If you were invited, sign up with the invited email and your circle appears automatically. Otherwise create one as the elder.</p><form class="card" onsubmit="mkCircle(event)"><label>Elder's name</label><input name="en" required><label>Circle name</label><input name="cn" placeholder="Sharma family" required><div style="margin-top:12px"><button>Create circle</button> <button type="button" class="alt" onclick="sb.auth.signOut()">Sign out</button></div></form>`;return}
+ const T=[['today','Today'],['meds','Medicines'],['appts','Appointments'],['circle','Circle'],['insights','Insights']];
+ A.innerHTML=`${demoBar()}<div class="row"><h1 class="sp">Hello, ${esc(ME.name)} <span class="chip">${ME.role}</span></h1><button class="alt" onclick="sb.auth.signOut()">Sign out</button></div><nav>${T.map(t=>`<button class="${tab===t[0]?'on':''}" onclick="tab='${t[0]}';render()">${t[1]}</button>`).join('')}</nav>${view()}`}
+setInterval(()=>{if(C&&!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))render()},30000);
+</script></body></html>
